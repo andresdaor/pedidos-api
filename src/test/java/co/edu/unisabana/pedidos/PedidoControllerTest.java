@@ -56,4 +56,20 @@ class PedidoControllerTest {
                 .content(body))
             .andExpect(status().isBadRequest());
     }
+
+    @Test
+    void crear_conCantidadCero_devuelve400() throws Exception {
+        String body = """
+                {
+                  "cliente": "Carlos Mejía",
+                  "producto": "Gaseosa",
+                  "cantidad": 0
+                }
+                """;
+
+        mvc.perform(post("/api/pedidos")
+                .contentType("application/json")
+                .content(body))
+            .andExpect(status().isBadRequest());
+    }
 }
