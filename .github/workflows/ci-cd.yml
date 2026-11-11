@@ -1,0 +1,145 @@
+# CI/CD: Pipeline completo para pedidos-api
+name: CI-CD Pipeline
+
+# CI/CD: cuándo se dispara
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+# CI/CD: permisos mínimos (principio de menor privilegio)
+permissions:
+  contents: read
+  packages: write          # para publicar en GHCR
+  security-events: write   # para subir reportes de seguridad
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  JAVA_VERSION: '21'
+
+jobs:
+  # -------------------------------------------------------------
+  # CI: Compilación y tests
+  # -------------------------------------------------------------
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven   # CI: cachea ~/.m2 para builds rápidos
+
+      - name: Compilar
+        run: ./mvnw clean compile -B
+
+      - name: Tests
+        run: ./mvnw test -B
+
+      - name: Empaquetar JAR
+        run: ./mvnw package -DskipTests -B
+
+      - name: Subir el JAR como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ github.sha }}
+          path: target/*.jar
+          retention-days: 5
+
+  # -------------------------------------------------------------
+  # CI: Build de imagen Docker + scan de seguridad + publicación
+  # Solo corre si build-and-test pasó
+  # -------------------------------------------------------------
+  docker-publish:
+    name: Build, Scan & Publish Image
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    # CD: no publicamos imagen desde PRs (no tienen secrets)
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Login a GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extraer metadata (tags y labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # CI: Docker exige nombres en minúscula; el usuario de GitHub puede tener mayúsculas
+      - name: Referencia de imagen para el scan
+        id: ref
+        run: echo "image=${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build imagen Docker
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Scan de vulnerabilidades con Trivy
+        # CI: versión fijada (no @master): los tags viejos de esta action sufrieron un ataque de supply chain
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ref.outputs.image }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'   # CI: no fallamos el build, solo reportamos
+
+      - name: Sube reporte de seguridad a GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Push imagen a GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # -------------------------------------------------------------
+  # CD: Despliegue a staging (solo en push a develop)
+  # -------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to Staging
+    needs: docker-publish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://pedidos-api-staging.example.com
+
+    steps:
+      - name: Anunciar el deploy
+        run: |
+          echo "Desplegando ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} a staging"
+          # En producción real, aquí va kubectl, helm, ssh + docker compose,
+          # o llamada al API del proveedor (Render, Railway, AWS ECS, etc.)

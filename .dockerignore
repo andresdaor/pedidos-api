@@ -1,0 +1,9 @@
+# DOCKER: no enviar al contexto de build lo que no hace falta
+target/
+.git/
+.github/
+.idea/
+.vscode/
+*.iml
+.env
+.env.local
