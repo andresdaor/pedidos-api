@@ -2,6 +2,7 @@ package co.edu.unisabana.pedidos;
 
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.Min;
 import java.time.Instant;
 
 // CAPA DE DOMINIO: entidad JPA que se mapea a la tabla pedidos
@@ -22,6 +23,7 @@ public class Pedido {
     private String producto;
 
     @Positive
+    @Min(value = 1, message = "La cantidad debe ser al menos 1")
     private int cantidad;
 
     @Column(name = "creado_en")
